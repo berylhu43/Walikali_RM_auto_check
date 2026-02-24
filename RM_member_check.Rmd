@@ -1,0 +1,488 @@
+---
+title: "test"
+output: pdf_document
+date: "2025-06-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE}
+library(readxl)
+library(dplyr)
+library(writexl)
+library(openxlsx)
+```
+
+## MEMBER MATCH
+
+```{r dataset, include=FALSE}
+# load coordinator data
+coor_member <- read_excel("/Users/yuxuanhu/Dropbox/Daily Reports/Excels/noid_03. LISTE ÉVADÉES MEMBRE-22_COORDINATEUR.xlsx")
+
+# load Chicago data
+chicago_member <- read_excel("/Users/yuxuanhu/Dropbox/Daily Reports/Excels/noid_Evaded-Answer.xlsx")
+
+# load Chicago booklet data
+chicago_booklet <- read.csv("/Users/yuxuanhu/Dropbox/Manual Data Verification/registre_PT.csv")
+```
+
+```{r CTO data load, echo=FALSE}
+# load CTO data
+cto_member_1 <- read.csv("/Users/yuxuanhu/Dropbox/Manual Data Verification/SurveyCTOs/ENDLINE EVADE Partie I_WIDE.csv")
+cto_member_2 <- read.csv("/Users/yuxuanhu/Dropbox/Manual Data Verification/SurveyCTOs/ENDLINE EVADE Partie II_WIDE.csv")
+booklet <- read.csv("/Users/yuxuanhu/Dropbox/Manual Data Verification/SurveyCTOs/ENDLINE_EVADE_EVAL LIVRET_WIDE.csv")
+```
+
+```{r clean date format, echo=FALSE}
+# change date format function
+clean_date_with_char <- function(file, colname, new_name) {
+  names(file)[names(file) == colname] <- new_name
+# case when dash between numbers
+  file[[new_name]] <- gsub("\u2013", "-", file[[new_name]])
+
+# case when 6.19/25
+  file[[new_name]] <- ifelse(
+    grepl("^\\d{1,2}\\.\\d{1,2}/\\d{2}$", file[[new_name]]),
+    gsub("^(\\d{1,2})\\.(\\d{1,2})/(\\d{2})$", "20\\3-\\1-\\2", file[[new_name]]),
+    file[[new_name]]
+  )
+# case when May 19,2025 etc
+  file[[new_name]] <- dplyr::case_when(
+    grepl("^\\d+$", file[[new_name]]) ~ as.character(as.Date(as.numeric(file[[new_name]]), origin = "1899-12-30")),
+    grepl("^[A-Za-z]{3} \\d{1,2}, \\d{4}$", file[[new_name]]) ~ as.character(as.Date(file[[new_name]], format = "%b %d, %Y")),
+    grepl("^\\d{2}-[A-Za-z]{3}-\\d{2}$", file[[new_name]]) ~ as.character(as.Date(file[[new_name]], format = "%d-%b-%y")),
+    grepl("^20\\d{2}-\\d{1,2}-\\d{1,2}$", file[[new_name]]) ~ file[[new_name]],
+    grepl("^[A-Za-z]{3} \\d{1,2}, \\d{4} \\d{1,2}:\\d{2}:\\d{2} [AP]M$", file[[new_name]]) ~
+  as.character(as.Date(as.POSIXct(file[[new_name]], format = "%b %d, %Y %I:%M:%S %p", tz = "UTC"))),
+    TRUE ~ file[[new_name]]
+  )
+  
+# 28/06/2025 au29/06/2025 -> 28/06/2025 au 29/06/2025
+  file[[new_name]] <- gsub("\\s*au\\s*", " au ", file[[new_name]])
+  
+# case when format is "dd/mm/yyyy au dd/mm/yyyy"
+  file[[new_name]] <- ifelse(
+    grepl("^\\d{2}/\\d{2}/\\d{4} au \\d{1,2}/\\d{1,2}/?\\d{0,4}$", file[[new_name]]),
+    sub("^(.+?) au .+$", "\\1", file[[new_name]]),
+    file[[new_name]]
+  )
+
+# case when format is "09/10/2024"
+  file[[new_name]] <- ifelse(
+  grepl("^\\d{2}/\\d{2}/\\d{4}$", file[[new_name]]),
+  as.character(as.Date(file[[new_name]], format = "%d/%m/%Y")),
+  file[[new_name]]
+)
+  return(file)
+}
+```
+
+```{r clean member, echo=FALSE}
+# clean coordination verification date format
+coor_member <- clean_date_with_char(coor_member, "Date de confirmation d'identité\n\nMM/JJ/AA", "verification_check_date_coor")
+coor_member <- clean_date_with_char(coor_member, "Date de l'interview pour ce membre-22", "interview_date")
+
+# clean chicago verification date format
+chicago_member <- clean_date_with_char(chicago_member, "Date of Check\n\nMM/DD/YY", "verification_check_date_chicago")
+
+# clean CTO download date
+cto_member_1 <- clean_date_with_char(cto_member_1, "today", "CTO_today")
+cto_member_2 <- clean_date_with_char(cto_member_2, "today", "CTO_today")
+
+# clean CTO submission date
+cto_member_1 <- clean_date_with_char(cto_member_1, "SubmissionDate", "SubmissionDate")
+cto_member_2 <- clean_date_with_char(cto_member_2, "SubmissionDate", "SubmissionDate")
+```
+
+
+```{r clean NA and empty, include=FALSE}
+# clean NA and empty id roles
+clean_NA <- function(file, column){
+  count_NA <- sum(is.na(pull(file, {{column}})))
+  count_empty <- sum(trimws(pull(file, {{column}})) == "")
+  
+  message("NA count: ", count_NA)
+  message("Empty string count: ", count_empty)
+  
+  file <- file %>%
+    filter(!is.na({{column}}) & trimws(as.character({{column}})) != "")
+  
+  return(file)
+}
+```
+
+```{r, clean NA member, echo=FALSE}
+chicago_member <- clean_NA(chicago_member, Id_newmem)
+coor_member <- clean_NA(coor_member, ID)
+cto_member_1 <- clean_NA(cto_member_1, id_newmem)
+cto_member_2 <- clean_NA(cto_member_2, id_newmem)
+booklet <- clean_NA(booklet, id_newmem)
+chicago_booklet <- clean_NA(chicago_booklet, treat_perspective)
+```
+
+```{r merge, echo=FALSE}
+# merge coordinator & chciago tables
+merged_member <- coor_member %>%
+  full_join(chicago_member, by = c("ID" = "Id_newmem"), suffix = c("_coor", "_chicago")) %>%
+  select(
+    ID = `ID`,
+    evaded_type_coor = `Statut ENQUETE EVADE`,
+    evaded_found_status_coor = `Le Membre-22 EVADES ou REVENUS  sont-ils trouvés ? \n\nSTATUT EVADE  ENQUETE`,
+    evaded_type_chicago = `Status Endline 2`,
+    updated_chicago = `Status Updated After Training.       If found different`,
+    verification_check_date_coor = `verification_check_date_coor`,
+    interview_date_coor = `interview_date`,
+    verification_check_date_chicago = `verification_check_date_chicago`,
+    team_coor = `Équipe Anim assignée`,
+    team_chicago = `Equipe`,
+    treated_with_booklet = `Treated with Booklet (Yes/No)`
+  )
+
+merged_member <- merged_member %>%
+  left_join(
+    chicago_booklet %>% select(id, treated_with_booklet_chicago_update = `treat_perspective`),
+    by = c("ID" = "id")
+  )
+```
+
+
+
+```{r spelling, echo=FALSE}
+# match spellings
+spelling_match <- function(file, column_name) {
+  file <- file %>%
+    mutate(
+      !!column_name := case_when(
+        .data[[column_name]] == "REVENUS" ~ "REJOINED",
+        .data[[column_name]] == "REVENU" ~ "REJOINED",
+        .data[[column_name]] == "R" ~ "REJOINED",
+        .data[[column_name]] == "DISPARUS" ~ "MISSING",
+        .data[[column_name]] == "Disappeared" ~ "MISSING",
+        .data[[column_name]] == "DECEDE" ~ "DECEASED",
+        .data[[column_name]] == "EVADES" ~ "EVADED",
+        .data[[column_name]] == "E" ~ "EVADED",
+        .data[[column_name]] == "Absent" ~ "ABSENT",
+        .data[[column_name]] == "Emigre" ~ "MIGRATED",
+        .data[[column_name]] == "TROUVÉ" ~ "FOUND",
+        .data[[column_name]] == "oui" ~ "YES",
+        .data[[column_name]] == "Oui" ~ "YES",
+        .data[[column_name]] == "non" ~ "NO",
+        .data[[column_name]] == "NON" ~ "NO",
+        .data[[column_name]] == "OUI" ~ "YES",
+        TRUE ~ .data[[column_name]]
+      )
+    )
+  return(file)
+}
+```
+
+```{r spelling check member, echo=FALSE}
+# standardize spelling
+merged_member <- spelling_match(merged_member, "evaded_found_status_coor")
+merged_member <- spelling_match(merged_member, "evaded_type_coor")
+merged_member <- spelling_match(merged_member, "evaded_type_chicago")
+merged_member <- spelling_match(merged_member, "updated_chicago")
+merged_member <- spelling_match(merged_member, "treated_with_booklet_chicago_update")
+```
+
+```{r combine_2_status_col, echo=FALSE}
+# update coordinator status based on evaded_found_status_coor
+update_member <- merged_member %>%
+ mutate(evaded_found_status_coor = coalesce(evaded_found_status_coor, evaded_type_coor))
+
+# update chicago status based on updated_chicago
+update_member <- merged_member %>%
+  mutate(updated_chicago = coalesce(updated_chicago, evaded_type_chicago))
+
+# select updated columns
+update_member <- update_member %>%
+    select(ID, 
+           evaded_found_status_coor, 
+           updated_chicago, 
+           verification_check_date_coor, 
+           interview_date_coor, 
+           verification_check_date_chicago, 
+           team_coor, 
+           team_chicago, 
+           treated_with_booklet)
+```
+
+```{r filtered table, echo=FALSE}
+rejoiner_table <- update_member %>%
+    filter(evaded_found_status_coor=="FOUND") %>%
+    select(ID,
+           team = `team_coor`,
+           evaded_found_status_coor,
+           updated_chicago,
+           verification_check_date_coor, 
+           interview_date_coor, 
+           verification_check_date_chicago,
+           treated_with_booklet
+           )
+```
+
+```{r updated rejoiners, echo=FALSE}
+# Read only the columns you want
+RM11 <- read_excel("/Users/yuxuanhu/Dropbox/Manual Data Verification/RM_auto/RM11.xlsx", sheet="member")[, c("ID", "team")]
+RM12 <- read_excel("/Users/yuxuanhu/Dropbox/Manual Data Verification/RM_auto/RM12.xlsx", sheet="member")[, c("ID", "team")]
+RM <- rbind(RM11, RM12)
+diff2 <- dplyr::anti_join(rejoiner_table, RM, by = c("ID", "team"))
+```
+
+
+```{r team spelling match, echo=FALSE} 
+# all to lower case
+rejoiner_table$team <- trimws(tolower(rejoiner_table$team))
+
+# fix spelling error
+rejoiner_table$team <- gsub("^eauipe", "equipe", rejoiner_table$team)
+
+# change space error
+rejoiner_table$team <- gsub("\\s+", " ", rejoiner_table$team)
+rejoiner_table$team <- gsub("equipe([0-9])", "equipe \\1", rejoiner_table$team)
+
+# case with only numbers
+rejoiner_table$team <- gsub("^([0-9]+)$", "equipe \\1", rejoiner_table$team)
+```
+
+
+```{r cto date subset, echo=FALSE}
+# cto_member_1 <- cto_member_1 %>%
+#     filter(grepl("7/2/25", SubmissionDate))
+# 
+# cto_member_2 <- cto_member_2 %>%
+#     filter(grepl("7/2/25", SubmissionDate))
+```
+
+```{r CTO data merge, echo=FALSE}
+# booklet file placeholder (remove when there's real data)
+# booklet <- booklet %>%
+#     mutate(
+#         id_newmem = NA_character_,
+#         perspective_livret = NA_character_,
+#         perspective_collect = NA_character_
+#     )
+
+cto_merge_member <- cto_member_1 %>%
+  full_join(cto_member_2, by = "id_newmem_final", suffix = c("_1", "_2")) %>%
+  mutate(
+    member_evaded_part_1 = ifelse(!is.na(CTO_today_1), 1, 0),
+    member_evaded_part_2 = ifelse(!is.na(CTO_today_2), 1, 0)
+  ) %>%
+  select(
+    ID = id_newmem_final,
+    CTO_submission_date = SubmissionDate_1,
+    alive = vivant,
+    animator = animator_name_1,
+    animator_other = animator_name_other_1,
+    animator_2 = animator_name_2,
+    animator_other_2 = animator_name_other_2,
+    evaded_found_status_CTO = id_status,
+    member_evaded_part_1,
+    member_evaded_part_2
+  )
+
+
+cto_merge_member <- cto_merge_member %>%
+    full_join(booklet, by = c("ID" = "id_newmem_final")) %>%
+    select(
+        ID, CTO_submission_date, alive, animator, animator_other, animator_2, animator_other_2, evaded_found_status_CTO, member_evaded_part_1, member_evaded_part_2, 
+        treated_with_booklet_cto = `perspective_livret`,
+        received_booklet = `perspective_collect`
+    )
+
+cto_merge_member <- cto_merge_member %>% distinct(ID, .keep_all = TRUE)
+cto_merge_member <- spelling_match(cto_merge_member, "evaded_found_status_CTO")
+```
+
+
+```{r combine animator name, echo=FALSE}
+animator_name <- function(file, animator_col, animator_other_col) {
+  file <- file %>%
+    mutate(
+# change the animator name to the right form
+      !!animator_col := ifelse(
+        .data[[animator_col]] == -666,
+        .data[[animator_other_col]],
+        .data[[animator_col]]
+      )
+    ) %>%
+# delete animator_other
+    select(-all_of(animator_other_col))
+  
+  return(file)
+}
+```
+
+```{r, echo=FALSE}
+cto_merge_member<- animator_name(cto_merge_member, "animator", "animator_other")
+cto_merge_member<- animator_name(cto_merge_member, "animator_2", "animator_other_2")
+```
+
+```{r full table, echo=FALSE}
+full_table_member <- rejoiner_table %>%
+    right_join(cto_merge_member, by = "ID") %>%
+    select(
+        ID, 
+        CTO_submission_date,
+        verification_check_date_coor, 
+        interview_date_coor, 
+        verification_check_date_chicago,
+        alive_cto = `alive`,
+        evaded_found_status_coor, 
+        updated_chicago, 
+        evaded_found_status_CTO, 
+        animator_cto = `animator`,
+        animator_cto_2 = `animator_2`,
+        team, 
+        member_evaded_part_1,
+        member_evaded_part_2,
+        treated_with_booklet_chicago = `treated_with_booklet`,
+        treated_with_booklet_cto,
+        received_booklet_cto = `received_booklet`
+        ) %>%
+    arrange(team)
+```
+
+```{r team founded count, echo=FALSE}
+# total new founded
+total_founded <- length(rejoiner_table$evaded_found_status_coor)
+
+# make a table showing how many is expect in each team
+expected_team <- tibble(
+  team = c("equipe 1", "equipe 2", "equipe 3"),
+  Total = c(
+    sum(rejoiner_table$team == "equipe 1"),
+    sum(rejoiner_table$team == "equipe 2"),
+    sum(rejoiner_table$team == "equipe 3")
+  )
+)
+```
+
+```{r founded in each team, echo=FALSE}
+# how many is found in each team
+team_count <- full_table_member %>%
+  group_by(team) %>%
+  summarise(Count = n()) %>%
+  arrange(factor(trimws(tolower(team)), levels = c("equipe 1", "equipe 2", "equipe 3")))
+
+# count how many is lacking
+team_status <- expected_team %>%
+  left_join(team_count, by = "team") %>%
+  mutate(
+    Count = ifelse(is.na(Count), 0, Count),
+    Not_Received = Total - Count
+  )
+
+# write_xlsx(team_status, path = "/Users/yuxuanhu/Dropbox/Manual Data Verification/RM_auto/waiting_team_members.xlsx")
+```
+
+```{r missing member survey, echo=FALSE}
+missing_member <- function(team_num) {
+  rejoiner_table %>%
+    filter(team == team_num) %>%
+    anti_join(full_table_member, by = "ID")
+}
+
+missing_all_member <- bind_rows(
+  missing_member("equipe 1"),
+  missing_member("equipe 2"),
+  missing_member("equipe 3")
+)
+
+```
+
+
+
+```{r CTO with only one team or rejoiners, echo=FALSE}
+# cto_team_member <- cto_merge_member %>%
+#     left_join(update_member, by = "ID") %>%
+#     select(
+#         ID, 
+#         CTO_submission_date,
+#         verification_check_date_coor, 
+#         interview_date_coor, 
+#         verification_check_date_chicago,
+#         alive_cto = `alive`,
+#         evaded_type_coor, 
+#         evaded_found_status_coor, 
+#         updated_chicago, 
+#         evaded_found_status_CTO, 
+#         animator_cto = `animator`,
+#         animator_cto_2 = `animator_2`,
+#         team_coor, 
+#         team_chicago, 
+#         member_evaded_part_1,
+#         member_evaded_part_2,
+#         treated_with_booklet_chicago = `treated_with_booklet`,
+#         treated_with_booklet_cto,
+#         received_booklet_cto = `received_booklet`
+#         )
+```
+
+
+```{r mismatch function, echo=FALSE}
+# check_status_mismatch <- function(coor, chicago, cto) {
+#   if (is.na(coor) & is.na(chicago) & is.na(cto)) {
+#     return("missing data")
+#   } else if (!is.na(coor) & !is.na(chicago) & !is.na(cto) & coor == chicago & chicago == cto) {
+#     return("match")
+#   } else {
+#     return("mismatch")
+#   }
+# }
+# 
+# full_table_member <- full_table_member %>%
+#   mutate(status_check = mapply(check_status_mismatch, evaded_found_status_coor, updated_chicago, evaded_found_status_CTO))
+```
+
+```{r export full table, echo=FALSE}
+smart_write_to_excel <- function(data, sheet_name, file_path) {
+# check if the file exist
+  wb <- if (file.exists(file_path)) {
+    loadWorkbook(file_path)
+  } else {
+    createWorkbook()
+  }
+  
+# check if the sheet exist
+  if (sheet_name %in% names(wb)) {
+    existing_data <- readWorkbook(file_path, sheet = sheet_name)
+    start_row <- nrow(existing_data) + 2  # 加2是为了留出标题行
+    writeData(wb, sheet = sheet_name, x = data, startRow = start_row, colNames = FALSE)
+    message("Data appended to sheet '", sheet_name, "' in ", file_path)
+  } else {
+    # if the sheet doesn't exist, create new sheet
+    addWorksheet(wb, sheet_name)
+    writeData(wb, sheet = sheet_name, x = data)
+    message("Sheet '", sheet_name, "' created and data written to ", file_path)
+  }
+  
+  # save the file
+  saveWorkbook(wb, file = file_path, overwrite = TRUE)
+}
+```
+
+```{r add new file, echo=FALSE}
+smart_write_to_excel(full_table_member, "member", "RM13.xlsx")
+```
+
+```{r mismatch, echo=FALSE}
+# mismatch <- function(data){
+#   result <- data %>% filter(status_check == "mismatch" | status_check == "missing data")
+#   return(result)
+# }
+# 
+# mismatch_member <- mismatch(full_table_member)
+# View(mismatch_member) 
+# write_xlsx(mismatch_member, path = "/Users/yuxuanhu/Dropbox/Daily Reports/Manual Data Verification/RM_auto/mismatch_member.xlsx")
+```
+
+
+
+
+
+
+

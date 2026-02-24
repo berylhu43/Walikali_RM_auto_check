@@ -1,0 +1,393 @@
+---
+title: "RM_villager_check"
+output: pdf_document
+date: "2025-06-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE}
+library(readxl)
+library(dplyr)
+library(writexl)
+library(openxlsx)
+```
+
+## VILLAGER MATCH
+
+### FUNCTIONS
+```{r clean date format, echo=FALSE}
+# change date format function
+clean_date_with_char <- function(file, colname, new_name) {
+  names(file)[names(file) == colname] <- new_name
+# case when dash between numbers
+  file[[new_name]] <- gsub("\u2013", "-", file[[new_name]])
+
+# case when 6.19/25
+  file[[new_name]] <- ifelse(
+    grepl("^\\d{1,2}\\.\\d{1,2}/\\d{2}$", file[[new_name]]),
+    gsub("^(\\d{1,2})\\.(\\d{1,2})/(\\d{2})$", "20\\3-\\1-\\2", file[[new_name]]),
+    file[[new_name]]
+  )
+# case when May 19,2025 etc
+  file[[new_name]] <- dplyr::case_when(
+    grepl("^\\d+$", file[[new_name]]) ~ as.character(as.Date(as.numeric(file[[new_name]]), origin = "1899-12-30")),
+    grepl("^[A-Za-z]{3} \\d{1,2}, \\d{4}$", file[[new_name]]) ~ as.character(as.Date(file[[new_name]], format = "%b %d, %Y")),
+    grepl("^\\d{2}-[A-Za-z]{3}-\\d{2}$", file[[new_name]]) ~ as.character(as.Date(file[[new_name]], format = "%d-%b-%y")),
+    grepl("^20\\d{2}-\\d{1,2}-\\d{1,2}$", file[[new_name]]) ~ file[[new_name]],
+    grepl("^[A-Za-z]{3} \\d{1,2}, \\d{4} \\d{1,2}:\\d{2}:\\d{2} [AP]M$", file[[new_name]]) ~
+  as.character(as.Date(as.POSIXct(file[[new_name]], format = "%b %d, %Y %I:%M:%S %p", tz = "UTC"))),
+    TRUE ~ file[[new_name]]
+  )
+  
+# 28/06/2025 au29/06/2025 -> 28/06/2025 au 29/06/2025
+  file[[new_name]] <- gsub("\\s*au\\s*", " au ", file[[new_name]])
+  
+# case when format is "dd/mm/yyyy au dd/mm/yyyy"
+  file[[new_name]] <- ifelse(
+    grepl("^\\d{2}/\\d{2}/\\d{4} au \\d{1,2}/\\d{1,2}/?\\d{0,4}$", file[[new_name]]),
+    sub("^(.+?) au .+$", "\\1", file[[new_name]]),
+    file[[new_name]]
+  )
+
+# case when format is "09/10/2024"
+  file[[new_name]] <- ifelse(
+  grepl("^\\d{2}/\\d{2}/\\d{4}$", file[[new_name]]),
+  as.character(as.Date(file[[new_name]], format = "%d/%m/%Y")),
+  file[[new_name]]
+)
+  return(file)
+}
+```
+
+```{r clean NA and empty, include=FALSE}
+# clean NA and empty id roles
+clean_NA <- function(file, column){
+  count_NA <- sum(is.na(pull(file, {{column}})))
+  count_empty <- sum(trimws(pull(file, {{column}})) == "")
+  
+  message("NA count: ", count_NA)
+  message("Empty string count: ", count_empty)
+  
+  file <- file %>%
+    filter(!is.na({{column}}) & trimws(as.character({{column}})) != "")
+  
+  return(file)
+}
+```
+
+```{r spelling, echo=FALSE}
+# match spellings
+spelling_match <- function(file, column_name) {
+  file <- file %>%
+    mutate(
+      !!column_name := case_when(
+        .data[[column_name]] == "REVENUS" ~ "REJOINED",
+        .data[[column_name]] == "REVENU" ~ "REJOINED",
+        .data[[column_name]] == "R" ~ "REJOINED",
+        .data[[column_name]] == "DISPARUS" ~ "MISSING",
+        .data[[column_name]] == "Disappeared" ~ "MISSING",
+        .data[[column_name]] == "DECEDE" ~ "DECEASED",
+        .data[[column_name]] == "EVADES" ~ "EVADED",
+        .data[[column_name]] == "E" ~ "EVADED",
+        .data[[column_name]] == "Absent" ~ "ABSENT",
+        .data[[column_name]] == "Emigre" ~ "MIGRATED",
+        .data[[column_name]] == "TROUVÉ" ~ "FOUND",
+        .data[[column_name]] == "oui" ~ "YES",
+        .data[[column_name]] == "Oui" ~ "YES",
+        .data[[column_name]] == "non" ~ "NO",
+        .data[[column_name]] == "NON" ~ "NO",
+        .data[[column_name]] == "Non" ~ "NO",
+        .data[[column_name]] == "OUI" ~ "YES",
+        TRUE ~ .data[[column_name]]
+      )
+    )
+  return(file)
+}
+```
+
+```{r combine animator name, echo=FALSE}
+animator_name <- function(file, animator_col, animator_other_col) {
+  file <- file %>%
+    mutate(
+# change the animator name to the right form
+      !!animator_col := ifelse(
+        .data[[animator_col]] == -666,
+        .data[[animator_other_col]],
+        .data[[animator_col]]
+      )
+    ) %>%
+# delete animator_other
+    select(-all_of(animator_other_col))
+  
+  return(file)
+}
+```
+
+```{r export full table, echo=FALSE}
+smart_write_to_excel <- function(data, sheet_name, file_path) {
+# check if the file exist
+  wb <- if (file.exists(file_path)) {
+    loadWorkbook(file_path)
+  } else {
+    createWorkbook()
+  }
+  
+# check if the sheet exist
+  if (sheet_name %in% names(wb)) {
+    existing_data <- readWorkbook(file_path, sheet = sheet_name)
+    start_row <- nrow(existing_data) + 2  # 加2是为了留出标题行
+    writeData(wb, sheet = sheet_name, x = data, startRow = start_row, colNames = FALSE)
+    message("Data appended to sheet '", sheet_name, "' in ", file_path)
+  } else {
+    # if the sheet doesn't exist, create new sheet
+    addWorksheet(wb, sheet_name)
+    writeData(wb, sheet = sheet_name, x = data)
+    message("Sheet '", sheet_name, "' created and data written to ", file_path)
+  }
+    # save the file
+  saveWorkbook(wb, file = file_path, overwrite = TRUE)
+}
+```
+
+### READ VILLAGER FILES
+
+```{r village data load, echo=FALSE}
+# load coordinator data
+coor_villager <- read_excel("/Users/yuxuanhu/Dropbox/Manual Data Verification/Excels/02. Villageois-Endline2-List.xlsx", skip = 2)
+colnames(coor_villager)[12] <- "Équipe Anim assignée"
+colnames(coor_villager)[13] <- "Ce villageois-22 a-t-il été trouvé à l’emplacement de Baseline?"
+colnames(coor_villager)[30] <- "Ces questions secrètes ont-elles été vérifiées dans Whatsapp ?"
+
+# load chicago data
+chicago_villager <- read_excel("/Users/yuxuanhu/Dropbox/Manual Data Verification/Excels/Villager-Answer.xlsx", skip = 2)
+
+# load CTO data
+cto_villager_1 <- read.csv("/Users/yuxuanhu/Dropbox/Manual Data Verification/SurveyCTOs/ENDLINE VILLAGEOIS Partie I_WIDE.csv")
+cto_villager_2 <- read.csv("/Users/yuxuanhu/Dropbox/Manual Data Verification/SurveyCTOs/ENDLINE VILLAGEOIS Partie II_WIDE.csv")
+```
+
+```{r clean date format, echo=FALSE}
+# clean coordination verification date format
+coor_villager <- clean_date_with_char(coor_villager, "Date de l'entretien pour ce villageois-22\r\n\r\nMM/JJ/YY", "member_interview_date_coor")
+coor_villager <- clean_date_with_char(coor_villager, "Date de l'entretien pour le {chef de menage} de villageois\r\n\r\nMM/JJ/YY", "villager_interview_date_coor")
+
+# clean chicago verification date format
+chicago_villager <- clean_date_with_char(chicago_villager, "Date of Check\r\n\r\nMM/DD/YY", "verification_check_date_chicago")
+
+# clean CTO download date
+cto_villager_1 <- clean_date_with_char(cto_villager_1, "today", "CTO_download_date")
+cto_villager_2 <- clean_date_with_char(cto_villager_2, "today", "CTO_download_date")
+```
+
+
+```{r villager, echo=FALSE}
+chicago_villager <- clean_NA(chicago_villager, Id_newmem)
+coor_villager <- clean_NA(coor_villager, ID)
+cto_villager_1 <- clean_NA(cto_villager_1, id_newmem)
+cto_villager_2 <- clean_NA(cto_villager_2, id_newmem)
+```
+
+```{r subset date, echo=FALSE}
+# subset data to date after 2025-05-23
+chicago_villager <- chicago_villager %>%
+  filter(as.Date(verification_check_date_chicago) > as.Date("2025-05-23"))
+```
+
+```{r merge, echo=FALSE}
+# merge coordinator & chciago tables
+merged_villager <- chicago_villager %>%
+    mutate(ID_match = Id_newmem) %>%
+    left_join(
+        coor_villager %>%
+            mutate(ID_match = ID),
+        by = "ID_match"
+    ) %>%
+  select(
+    verification_check_date_chicago,
+    ID_coor = `ID`,
+    ID_chicago = `Id_newmem`,
+    team_coor = `Équipe Anim assignée`,
+    team_chicago = `Team Number`,
+    found_in_village_coor = `Ce villageois-22 a-t-il été trouvé à l’emplacement de Baseline?`,
+    found_in_village_chicago = `Found in Baseline Village?\r\n\r\n(OUI/NO)`,
+    member_interview_date_coor,
+    villager_interview_date_coor
+  )
+```
+
+
+```{r villager spelling check, echo=FALSE}
+merged_villager <- spelling_match(merged_villager, "found_in_village_coor")
+merged_villager <- spelling_match(merged_villager, "found_in_village_chicago")
+
+# all to lower case
+merged_villager$team_coor <- trimws(tolower(merged_villager$team_coor))
+
+# fix spelling error
+merged_villager$team_coor <- gsub("^eauipe", "equipe", merged_villager$team_coor)
+
+# change space error
+merged_villager$team_coor <- gsub("\\s+", " ", merged_villager$team_coor)
+merged_villager$team_coor <- gsub("quipe([0-9])", "equipe \\1", merged_villager$team_coor)
+
+# case with only numbers
+merged_villager$team_coor <- gsub("^([0-9]+)$", "equipe \\1", merged_villager$team_coor)
+```
+
+
+```{r villgaer found status filter, echo=FALSE}
+founded_villager <- merged_villager %>%
+    filter(found_in_village_coor == "YES")
+
+result <- founded_villager %>%
+  group_by(team_coor) %>%
+  summarise(
+    Yes_Count = n()
+  )
+result <- bind_rows(result,
+                    tibble(team_coor = "Total",
+                           Yes_Count = sum(result$Yes_Count)))
+# 
+# write_xlsx(founded_villager, path = "/Users/yuxuanhu/Dropbox/Daily Reports/Manual Data Verification/RM_auto/founded_villagers.xlsx")
+```
+
+```{r disappear villagers, echo=FALSE}
+disappeared_villager <- merged_villager %>%
+    filter(found_in_village_coor != "YES")
+```
+
+
+```{r updated villagers, echo=FALSE}
+# Read only the columns you want
+RM11_villager <- read_excel("/Users/yuxuanhu/Dropbox/Manual Data Verification/RM_auto/RM11.xlsx", sheet="villager")[, c("ID_coor", "team_coor")]
+RM11_villager$team_coor <- trimws(tolower(RM11_villager$team_coor))
+
+RM12_villager <- read_excel("/Users/yuxuanhu/Dropbox/Manual Data Verification/RM_auto/RM12.xlsx", sheet="villager")[, c("ID_coor", "team_coor")]
+RM_villager <- rbind(RM11_villager, RM12_villager)
+
+diff_villager <- dplyr::anti_join(founded_villager, RM_villager, by = c("ID_coor", "team_coor"))
+diff_villager <- diff_villager %>%
+    select(ID_coor,team_coor) %>%
+    arrange(team_coor)
+
+diff_villager_by_team <- diff_villager %>% 
+    count(team_coor)
+write_xlsx(diff_villager, path = "/Users/yuxuanhu/Dropbox/Manual Data Verification/RM_auto/waiting_villagers_RM13.xlsx")
+    
+```
+
+
+
+```{r CTO data merge, echo=FALSE}
+# merge CTO data
+cto_merge_villager <- cto_villager_1 %>%
+  full_join(cto_villager_2, by = "id_newmem_final", suffix = c("_1", "_2")) %>%
+  mutate(
+    villager_evaded_part_1 = ifelse(!is.na(CTO_download_date_1), 1, 0),
+    villager_evaded_part_2 = ifelse(!is.na(CTO_download_date_2), 1, 0),
+    ID = id_newmem_final
+  ) %>%
+  select(
+    ID,
+    CTO_download_date = CTO_download_date_1,
+    alive = vivant,
+    survey_hhtype = `survey_hhtype_1`,
+    animator_name_1 = `animator_name_1`,
+    animator_name_other_1 = `animator_name_other_1`,
+    animator_name_2 = `animator_name_2`,
+    animator_name_other_2 = `animator_name_other_2`,
+    villager_evaded_part_1,
+    villager_evaded_part_2
+  )
+
+cto_merge_villager <- cto_merge_villager %>% distinct(ID, .keep_all = TRUE)
+
+```
+
+```{r animator name, echo=FALSE}
+cto_merge_villager <- animator_name(cto_merge_villager, "animator_name_1", "animator_name_other_1")
+cto_merge_villager <- animator_name(cto_merge_villager, "animator_name_2", "animator_name_other_2")
+```
+
+
+```{r full table, echo=FALSE}
+full_table_villager <- merged_villager %>%
+    right_join(cto_merge_villager, by = c("ID_coor" = "ID")) %>%
+    select(
+        ID_coor,
+        ID_chicago,
+        CTO_download_date,
+        alive, 
+        animator_name_1,
+        animator_name_2,
+        team_coor,
+        team_chicago,
+        found_in_village_coor,
+        found_in_village_chicago,
+        member_interview_date_coor,
+        villager_interview_date_coor,
+        survey_hhtype,
+        villager_evaded_part_1,
+        villager_evaded_part_2
+    ) %>%
+    arrange(team_coor)
+```
+
+
+```{r villager match, echo=FALSE}
+View(full_table_villager) 
+smart_write_to_excel(full_table_villager, "villager", "RM13.xlsx")
+```
+
+```{r not full pair, echo=FAlSE}
+find_incomplete_ids <- function(df) {
+  
+# clear ma mp in coor_ID
+  df <- df %>%
+    mutate(
+      core_id = trimws(sub("(ma1|mp1)$", "", ID_coor))
+    )
+  print(df)
+  
+# group by IDs
+  summary <- df %>%
+    group_by(core_id) %>%
+    summarise(
+      has_ma = any(survey_hhtype == "ma1", na.rm = TRUE),
+      has_mp = any(survey_hhtype == "mp1", na.rm = TRUE)
+    ) %>%
+    filter(!(has_ma & has_mp))
+  
+  return(summary)
+}
+
+incomplete_id <- find_incomplete_ids(full_table_villager)
+print(incomplete_id)
+```
+
+
+```{r in-team missing person, echo=FALSE}
+missing_villager <- function(team_num) {
+  founded_villager %>%
+    filter(team_coor == team_num) %>%
+    anti_join(full_table_villager, by = "ID_coor")
+}
+
+missing_all_villager <- bind_rows(
+  missing_villager("Equipe 1"),
+  missing_villager("Equipe 2"),
+  missing_villager("Equipe 3"),
+  missing_villager("Equipe 4")
+)
+
+
+# write_xlsx(team1, path = "/Users/yuxuanhu/Dropbox/Daily Reports/Manual Data Verification/RM_auto/team1_villager.xlsx")
+```
+
+```{r}
+cto_test_villager_2 <- read.csv("/Users/yuxuanhu/Dropbox/Manual Data Verification/SurveyCTOs/ENDLINE VILLAGEOIS Partie II_WIDE.csv")
+```
+
